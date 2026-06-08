@@ -177,6 +177,14 @@ def session(model):
     return fm.LanguageModelSession(model=model)
 
 
+@pytest.fixture
+def test_image_path():
+    """Shared fixture for test image path."""
+    from pathlib import Path
+
+    return Path(__file__).parent / "resources" / "test-simple-image.jpeg"
+
+
 def assert_schema_properties(
     schema: fm.GenerationSchema, title: str, properties: list[str]
 ):

@@ -23,6 +23,8 @@ typedef const void *FMBridgedToolRef;
 typedef void (*_Nonnull FMLanguageModelSessionResponseCallback)(int status, const char *_Nullable content, size_t length, void *_Nullable userInfo) __attribute__((swift_attr("@Sendable")));
 typedef void (*_Nonnull FMLanguageModelSessionStructuredResponseCallback)(int status, FMGeneratedContentRef _Nullable content, void *_Nullable userInfo) __attribute__((swift_attr("@Sendable")));
 
+// MARK: - SystemLanguageModel
+
 // Availability enum
 typedef enum
 {
@@ -46,17 +48,38 @@ typedef enum
   FMSystemLanguageModelGuardrailsPermissiveContentTransformations = 1,
 } FMSystemLanguageModelGuardrails;
 
-// SystemLanguageModel functions
 FMSystemLanguageModelRef _Nonnull FMSystemLanguageModelGetDefault();
 FMSystemLanguageModelRef _Nonnull FMSystemLanguageModelCreate(FMSystemLanguageModelUseCase useCase, FMSystemLanguageModelGuardrails guardrails);
 bool FMSystemLanguageModelIsAvailable(FMSystemLanguageModelRef _Nonnull ref, FMSystemLanguageModelUnavailableReason *_Nullable unavailableReason);
 FMLanguageModelSessionRef _Nonnull FMLanguageModelSessionCreateDefault();
 FMLanguageModelSessionRef _Nonnull FMLanguageModelSessionCreateFromSystemLanguageModel(FMSystemLanguageModelRef _Nullable model, const char *_Nullable instructions, FMBridgedToolRef _Nullable *_Nullable tools, int toolCount);
+
+// MARK: - LanguageModelSession
+
+// Prompt construction
+
+typedef const void *_Nonnull FMComposedPrompt;
+
+FMComposedPrompt _Nonnull FMComposedPromptInitialize();
+
+typedef enum {
+    FMComposedPromptAddImageErrorNone,
+    FMComposedPromptAddImageErrorUnsupported,
+    FMComposedPromptAddImageErrorUnknown
+} FMComposedPromptAddImageError;
+
+void FMComposedPromptAddText(FMComposedPrompt _Nonnull composedPrompt, const char *_Nonnull text);
+bool FMComposedPromptAddImage(FMComposedPrompt _Nonnull composedPrompt, const char *_Nonnull imagePath, FMComposedPromptAddImageError * _Nullable error);
+bool FMComposedPromptAddIdentifiedImage(FMComposedPrompt _Nonnull composedPrompt, const char *_Nonnull imagePath, const char *_Nonnull imageIdentifier, FMComposedPromptAddImageError * _Nullable error);
+bool FMComposedPromptAddAttachment(FMComposedPrompt _Nonnull composedPrompt, const char *_Nonnull imagePath, const char *_Nullable label, FMComposedPromptAddImageError * _Nullable error);
+
+// Response functions
+
 FMLanguageModelSessionRef _Nonnull FMLanguageModelSessionCreateFromTranscript(FMLanguageModelSessionRef _Nonnull transcriptSession, FMSystemLanguageModelRef _Nullable model, FMBridgedToolRef _Nullable *_Nullable tools, int toolCount);
 bool FMLanguageModelSessionIsResponding(FMLanguageModelSessionRef _Nonnull session);
 void FMLanguageModelSessionReset(FMLanguageModelSessionRef _Nonnull session);
-FMTaskRef FMLanguageModelSessionRespond(FMLanguageModelSessionRef _Nonnull session, const char *_Nonnull prompt, const char *_Nullable optionsJSON, void *_Nullable userInfo, FMLanguageModelSessionResponseCallback callback);
-FMLanguageModelSessionResponseStreamRef _Nonnull FMLanguageModelSessionStreamResponse(FMLanguageModelSessionRef _Nonnull session, const char *_Nonnull prompt, const char *_Nullable optionsJSON);
+FMTaskRef FMLanguageModelSessionRespond(FMLanguageModelSessionRef _Nonnull session, FMComposedPrompt _Nonnull composedPrompt, const char *_Nullable optionsJSON, void *_Nullable userInfo, FMLanguageModelSessionResponseCallback callback);
+FMLanguageModelSessionResponseStreamRef _Nonnull FMLanguageModelSessionStreamResponse(FMLanguageModelSessionRef _Nonnull session, FMComposedPrompt _Nonnull composedPrompt, const char *_Nullable optionsJSON);
 void FMLanguageModelSessionResponseStreamIterate(FMLanguageModelSessionResponseStreamRef _Nonnull stream, void *_Nullable userInfo, FMLanguageModelSessionResponseCallback callback);
 
 // Transcript functions
@@ -78,19 +101,24 @@ void FMGenerationSchemaAddProperty(FMGenerationSchemaRef _Nonnull schema, FMGene
 void FMGenerationSchemaAddReferenceSchema(FMGenerationSchemaRef _Nonnull schema, FMGenerationSchemaRef _Nonnull referenceSchema);
 char *_Nullable FMGenerationSchemaGetJSONString(FMGenerationSchemaRef _Nonnull schema, int *_Nullable outErrorCode, char *_Nullable *_Nullable outErrorDescription);
 
-// GeneratedContent functions
+// MARK: - GeneratedContent
+
 FMGeneratedContentRef _Nullable FMGeneratedContentCreateFromJSON(const char *_Nonnull jsonString, int *_Nullable outErrorCode, char *_Nullable *_Nullable outErrorDescription);
 char *_Nullable FMGeneratedContentGetJSONString(FMGeneratedContentRef _Nonnull content);
 char *_Nullable FMGeneratedContentGetPropertyValue(FMGeneratedContentRef _Nonnull content, const char *_Nonnull propertyName, int *_Nullable outErrorCode, char *_Nullable *_Nullable outErrorDescription);
 bool FMGeneratedContentIsComplete(FMGeneratedContentRef _Nonnull content);
 
 // Structured generation session functions
-FMTaskRef FMLanguageModelSessionRespondWithSchema(FMLanguageModelSessionRef _Nonnull session, const char *_Nonnull prompt, FMGenerationSchemaRef _Nonnull schema, const char *_Nullable optionsJSON, void *_Nullable userInfo, FMLanguageModelSessionStructuredResponseCallback callback);
-FMTaskRef FMLanguageModelSessionRespondWithSchemaFromJSON(FMLanguageModelSessionRef _Nonnull session, const char *_Nonnull prompt, const char *_Nonnull schemaJSONString, const char *_Nullable optionsJSON, void *_Nullable userInfo, FMLanguageModelSessionStructuredResponseCallback callback);
+FMTaskRef FMLanguageModelSessionRespondWithSchema(FMLanguageModelSessionRef _Nonnull session, FMComposedPrompt _Nonnull composedPrompt, FMGenerationSchemaRef _Nonnull schema, const char *_Nullable optionsJSON, void *_Nullable userInfo, FMLanguageModelSessionStructuredResponseCallback callback);
+FMTaskRef FMLanguageModelSessionRespondWithSchemaFromJSON(FMLanguageModelSessionRef _Nonnull session, FMComposedPrompt _Nonnull composedPrompt, const char *_Nonnull schemaJSONString, const char *_Nullable optionsJSON, void *_Nullable userInfo, FMLanguageModelSessionStructuredResponseCallback callback);
+
+// MARK: - Tools
 
 // Tool functions
 FMBridgedToolRef _Nullable FMBridgedToolCreate(const char *_Nonnull name, const char *_Nonnull description, FMGenerationSchemaRef _Nonnull parameters, void (*_Nonnull callable)(FMGeneratedContentRef _Nonnull, unsigned int), int *_Nullable outErrorCode, char *_Nullable *_Nullable outErrorDescription) __attribute__((swift_attr("@Sendable")));
 void FMBridgedToolFinishCall(FMBridgedToolRef _Nonnull tool, unsigned int callId, const char *_Nonnull output);
+
+// MARK: - Memory management
 
 void FMTaskCancel(FMTaskRef task);
 

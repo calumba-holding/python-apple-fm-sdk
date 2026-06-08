@@ -40,6 +40,20 @@ def _fix_library_search_dirs(paths_str: str) -> str:
     return f"add_library_search_dirs([{', '.join(new_paths)}])"
 
 
+def _macos_sdk_major_version() -> Optional[int]:
+    """Major version of the active macOS SDK (e.g. 26, 27), or None if undetectable."""
+    try:
+        sdk_version = subprocess.run(
+            ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        return int(sdk_version.split(".")[0])
+    except (subprocess.CalledProcessError, ValueError, IndexError):
+        return None
+
+
 def _build_c_bindings(
     swift_build_config: str,
     override_library_search_path: Optional[str],
@@ -131,9 +145,15 @@ def _build_c_bindings(
 
     swiftPackageDir = Path("foundation-models-c").resolve()
 
+    # `Attachment` (image support) only exists in the macOS 27+ SDK
+    extra_swift_args = []
+    sdk_major = _macos_sdk_major_version()
+    if sdk_major is not None and sdk_major >= 27:
+        extra_swift_args += ["-Xswiftc", "-DFM_HAS_MACOS_27_SDK"]
+
     try:
         result = subprocess.run(
-            ["swift", "build", "-c", swift_build_config],
+            ["swift", "build", "-c", swift_build_config, *extra_swift_args],
             check=True,
             cwd=str(swiftPackageDir),
             capture_output=True,

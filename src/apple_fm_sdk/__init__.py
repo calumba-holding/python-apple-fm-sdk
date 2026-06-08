@@ -13,6 +13,14 @@ from .core import (
 )
 
 from .session import LanguageModelSession
+from .prompt import (
+    ImageAttachment,
+    Attachment,
+    PromptComponent,
+    Prompt,
+    PromptError,
+    ImagePromptError,
+)
 
 from .transcript import Transcript
 
@@ -55,6 +63,12 @@ __version__ = "0.1.0"
 __all__ = [
     "SystemLanguageModel",
     "LanguageModelSession",
+    "Attachment",
+    "ImageAttachment",
+    "PromptComponent",
+    "Prompt",
+    "PromptError",
+    "ImagePromptError",
     "Transcript",
     "SystemLanguageModelUseCase",
     "SystemLanguageModelGuardrails",

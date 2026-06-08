@@ -835,6 +835,7 @@ async def test_stream_session_deallocation():
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(120)  # 2 minute timeout for the entire test
 async def test_comprehensive_memory_lifecycle():
     """Comprehensive test of memory lifecycle across all operations."""
     print("\n=== Testing Comprehensive Memory Lifecycle ===")
@@ -848,21 +849,42 @@ async def test_comprehensive_memory_lifecycle():
 
     # Create and use multiple sessions with various operations
     for i in range(3):
+        print(f"Starting lifecycle iteration {i + 1}...")
+
         tool = SimpleCalculatorTool()
         weak_refs["tools"].append(weakref.ref(tool))
 
         session = fm.LanguageModelSession(model=model, tools=[tool])
         weak_refs["sessions"].append(weakref.ref(session))
 
-        # Regular respond
-        response = await session.respond(f"What is {i + 1}?")
-        assert response, f"Expected response {i + 1}"
+        # Regular respond with timeout
+        print(f"  - Sending respond request {i + 1}...")
+        try:
+            response = await asyncio.wait_for(
+                session.respond(f"What is {i + 1}?"), timeout=30.0
+            )
+            assert response, f"Expected response {i + 1}"
+            print(f"  - Respond {i + 1} completed")
+        except asyncio.TimeoutError:
+            print(f"  ✗ TIMEOUT: respond request {i + 1} hung after 30 seconds")
+            raise AssertionError(f"Respond request {i + 1} timed out after 30 seconds")
 
-        # Stream
-        chunks = []
-        async for chunk in session.stream_response(f"Count to {i + 1}"):
-            chunks.append(chunk)
-        assert chunks, f"Expected chunks {i + 1}"
+        # Stream with timeout
+        print(f"  - Starting stream request {i + 1}...")
+        try:
+            chunks = []
+            stream_gen = session.stream_response(f"Count to {i + 1}")
+
+            async def collect_chunks():
+                async for chunk in stream_gen:
+                    chunks.append(chunk)
+
+            await asyncio.wait_for(collect_chunks(), timeout=30.0)
+            assert chunks, f"Expected chunks {i + 1}"
+            print(f"  - Stream {i + 1} completed with {len(chunks)} chunks")
+        except asyncio.TimeoutError:
+            print(f"  ✗ TIMEOUT: stream request {i + 1} hung after 30 seconds")
+            raise AssertionError(f"Stream request {i + 1} timed out after 30 seconds")
 
         # Create content
         content = fm.GeneratedContent(content_dict={"value": i})
@@ -875,11 +897,13 @@ async def test_comprehensive_memory_lifecycle():
         del tool
 
     # Force cleanup
+    print("Starting cleanup phase...")
     gc.collect()
     gc.collect()
     await asyncio.sleep(0.3)
 
     # Verify all objects deallocated
+    print("Verifying deallocation...")
     leaked_sessions = sum(1 for ref in weak_refs["sessions"] if ref() is not None)
     leaked_tools = sum(1 for ref in weak_refs["tools"] if ref() is not None)
     leaked_contents = sum(1 for ref in weak_refs["contents"] if ref() is not None)

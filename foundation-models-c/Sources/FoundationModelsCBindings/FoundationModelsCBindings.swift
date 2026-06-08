@@ -8,6 +8,81 @@ import FoundationModels
 import FoundationModelsCDeclarations
 import Synchronization
 
+enum ComposedPromptError: Error {
+  case unsupported
+}
+
+/// Builder class for a `Prompt`.
+public class ComposedPrompt: NSObject, PromptRepresentable {
+  public init(components: [PromptRepresentable] = []) {
+    self.components = components
+    super.init()
+  }
+
+  private(set) public var components: [PromptRepresentable]
+
+  public func add(text: String) {
+    self.components.append(text)
+  }
+
+  public func add(attachmentFromPath imagePath: String, label: String?) throws {
+    // `Attachment` only exists in the macOS 27+ SDK
+    #if FM_HAS_MACOS_27_SDK
+    if #available(iOS 27.0, macOS 27.0, visionOS 27.0, watchOS 27.0, *) {
+      let url = URL(fileURLWithPath: imagePath)
+      var attachment = Attachment(imageURL: url)
+      if let label {
+        attachment = attachment.label(label)
+      }
+      self.components.append(attachment)
+      return
+    }
+    #endif
+
+    throw ComposedPromptError.unsupported
+  }
+
+  public var promptRepresentation: Prompt {
+    return Prompt {
+      components.map(\.promptRepresentation)
+    }
+  }
+}
+
+@_cdecl("FMComposedPromptInitialize")
+public func FMComposedPromptInitialize() -> FMComposedPrompt {
+  return FMComposedPrompt(Unmanaged.passRetained(ComposedPrompt()).toOpaque())
+}
+
+@_cdecl("FMComposedPromptAddText")
+public func FMComposedPromptAddText(composedPrompt: FMComposedPrompt, text: UnsafePointer<CChar>) {
+  let composedPrompt = Unmanaged<ComposedPrompt>.fromOpaque(composedPrompt).takeUnretainedValue()
+  let textToAddToPrompt = String(cString: text)
+  composedPrompt.add(text: textToAddToPrompt)
+}
+
+@_cdecl("FMComposedPromptAddAttachment")
+public func FMComposedPromptAddAttachment(
+  composedPrompt: FMComposedPrompt,
+  imagePath: UnsafePointer<CChar>,
+  label: UnsafePointer<CChar>?,
+  error: UnsafeMutablePointer<FMComposedPromptAddImageError>?
+) -> Bool {
+  let composedPrompt = Unmanaged<ComposedPrompt>.fromOpaque(composedPrompt).takeUnretainedValue()
+  let imageURLToAddToPrompt = String(cString: imagePath)
+  let labelString = label.map(String.init(cString:))
+  do {
+    try composedPrompt.add(attachmentFromPath: imageURLToAddToPrompt, label: labelString)
+    return true
+  } catch ComposedPromptError.unsupported {
+    error?.pointee = FMComposedPromptAddImageErrorUnsupported
+    return false
+  } catch _ {
+    error?.pointee = FMComposedPromptAddImageErrorUnknown
+    return false
+  }
+}
+
 final class TaskBox {
   let task: Task<(), Never>
   init(_ task: Task<(), Never>) {
@@ -87,7 +162,7 @@ public func FMSystemLanguageModelIsAvailable(
   }
 }
 
-// MARK: - Session creation
+// MARK: - Session creation from SystemLanguageModel
 
 @_cdecl("FMLanguageModelSessionCreateDefault")
 public func FMLanguageModelSessionCreateDefault() -> FMLanguageModelSessionRef {
@@ -126,6 +201,8 @@ public func FMLanguageModelSessionCreateFromSystemLanguageModel(
   )
   return FMLanguageModelSessionRef(Unmanaged.passRetained(session).toOpaque())
 }
+
+// MARK: - Session management
 
 @_cdecl("FMLanguageModelSessionCreateFromTranscript")
 public func FMLanguageModelSessionCreateFromTranscript(
@@ -318,15 +395,15 @@ private func parseGenerationOptions(from jsonString: String?) throws -> Generati
 @_cdecl("FMLanguageModelSessionRespond")
 public func FMLanguageModelSessionRespond(
   session: FMLanguageModelSessionRef,
-  prompt: UnsafePointer<CChar>,
+  composedPrompt: FMComposedPrompt,
   optionsJSON: UnsafePointer<CChar>?,
   userInfo: UnsafeMutableRawPointer?,
   callback: FMLanguageModelSessionResponseCallback
 ) -> FMTaskRef {
   let session = Unmanaged<LanguageModelSession>.fromOpaque(session).takeUnretainedValue()
   let unsafeSendableUserInfo = UnsafeSendableUserInfo(pointer: userInfo)
-
-  let promptString = String(cString: prompt)
+  let prompt = Unmanaged<ComposedPrompt>.fromOpaque(composedPrompt).takeUnretainedValue()
+    .promptRepresentation
   let optionsJSONString = optionsJSON.map(String.init(cString:))
 
   let task = Task.detached {
@@ -339,7 +416,7 @@ public func FMLanguageModelSessionRespond(
 
       // Perform the expensive operation with options
       let response = try await session.respond(
-        to: promptString,
+        to: prompt,
         options: options ?? GenerationOptions()
       )
 
@@ -408,16 +485,17 @@ private final class UnsafeSendableResponseStreamBox<Content: Generable>: @unchec
 @_cdecl("FMLanguageModelSessionStreamResponse")
 public func FMLanguageModelSessionStreamResponse(
   session: FMLanguageModelSessionRef,
-  prompt: UnsafePointer<CChar>,
+  composedPrompt: FMComposedPrompt,
   optionsJSON: UnsafePointer<CChar>?
 ) -> FMLanguageModelSessionResponseStreamRef? {
   let session = Unmanaged<LanguageModelSession>.fromOpaque(session).takeUnretainedValue()
-  let promptString = String(cString: prompt)
+  let prompt = Unmanaged<ComposedPrompt>.fromOpaque(composedPrompt).takeUnretainedValue()
+    .promptRepresentation
   let optionsJSONString = optionsJSON.map(String.init(cString:))
 
   do {
     let options = try parseGenerationOptions(from: optionsJSONString)
-    let stream = session.streamResponse(to: promptString, options: options ?? GenerationOptions())
+    let stream = session.streamResponse(to: prompt, options: options ?? GenerationOptions())
     let box = UnsafeSendableResponseStreamBox<String>(stream: stream, session: session)
     return FMLanguageModelSessionResponseStreamRef(Unmanaged.passRetained(box).toOpaque())
   } catch {
@@ -505,14 +583,15 @@ public func FMLanguageModelSessionResponseStreamIterate(
 @_cdecl("FMLanguageModelSessionRespondWithSchema")
 public func FMLanguageModelSessionRespondWithSchema(
   session: FMLanguageModelSessionRef,
-  prompt: UnsafePointer<CChar>,
+  composedPrompt: FMComposedPrompt,
   schema: FMGenerationSchemaRef,
   optionsJSON: UnsafePointer<CChar>?,
   userInfo: UnsafeMutableRawPointer?,
   callback: FMLanguageModelSessionStructuredResponseCallback
 ) -> FMTaskRef {
   let session = Unmanaged<LanguageModelSession>.fromOpaque(session).takeUnretainedValue()
-  let promptString = String(cString: prompt)
+  let prompt = Unmanaged<ComposedPrompt>.fromOpaque(composedPrompt).takeUnretainedValue()
+    .promptRepresentation
   let schemaBuilder = Unmanaged<GenerationSchemaBuilder>.fromOpaque(schema).takeUnretainedValue()
   let optionsJSONString = optionsJSON.map(String.init(cString:))
   let unsafeSendableUserInfo = UnsafeSendableUserInfo(pointer: userInfo)
@@ -531,7 +610,7 @@ public func FMLanguageModelSessionRespondWithSchema(
       // Use Foundation Models guided generation API
       try Task.checkCancellation()
       let response = try await session.respond(
-        to: promptString,
+        to: prompt,
         schema: finalSchema,
         options: options ?? GenerationOptions()
       )
@@ -577,14 +656,15 @@ public func FMLanguageModelSessionRespondWithSchema(
 @_cdecl("FMLanguageModelSessionRespondWithSchemaFromJSON")
 public func FMLanguageModelSessionRespondWithSchemaFromJSON(
   session: FMLanguageModelSessionRef,
-  prompt: UnsafePointer<CChar>,
+  composedPrompt: FMComposedPrompt,
   jsonSchema: UnsafePointer<CChar>,
   optionsJSON: UnsafePointer<CChar>?,
   userInfo: UnsafeMutableRawPointer?,
   callback: FMLanguageModelSessionStructuredResponseCallback
 ) -> FMTaskRef {
   let session = Unmanaged<LanguageModelSession>.fromOpaque(session).takeUnretainedValue()
-  let promptString = String(cString: prompt)
+  let prompt = Unmanaged<ComposedPrompt>.fromOpaque(composedPrompt).takeUnretainedValue()
+    .promptRepresentation
   let jsonSchemaString = String(cString: jsonSchema)
   let optionsJSONString = optionsJSON.map(String.init(cString:))
   let unsafeSendableUserInfo = UnsafeSendableUserInfo(pointer: userInfo)
@@ -605,7 +685,7 @@ public func FMLanguageModelSessionRespondWithSchemaFromJSON(
 
       try Task.checkCancellation()
       let response = try await session.respond(
-        to: promptString,
+        to: prompt,
         schema: schema,
         options: options ?? GenerationOptions()
       )

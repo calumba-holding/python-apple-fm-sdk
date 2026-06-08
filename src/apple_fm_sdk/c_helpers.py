@@ -170,6 +170,37 @@ def _get_error_string(error_code, error_desc):
     return err_code, err_desc
 
 
+def _get_error_string(error_code, error_desc):
+    """
+    Extract error information from C error output parameters.
+
+    :param error_code: c_int object containing the error code
+    :type error_code: ctypes.c_int
+    :param error_desc: POINTER(c_char) object containing the error description
+    :type error_desc: ctypes.POINTER(ctypes.c_char)
+    :return: (error_code, error_description) or (None, None) if no error
+    :rtype: tuple
+    """
+    if error_code is None or error_desc is None:
+        return None, None
+
+    # Get the error code value directly from the c_int object
+    err_code = error_code.value if hasattr(error_code, "value") else None
+    err_desc = None
+
+    # Get the error description from the POINTER(c_char) object
+    if error_desc:
+        try:
+            err_desc = ctypes.string_at(error_desc).decode("utf-8")
+        except Exception:
+            err_desc = "Failed to decode error description"
+        finally:
+            # Free the error string allocated by C
+            lib.FMFreeString(error_desc)
+
+    return err_code, err_desc
+
+
 class _ManagedObject:
     """
     Base class for Python objects that wrap C/Swift pointers requiring memory management.

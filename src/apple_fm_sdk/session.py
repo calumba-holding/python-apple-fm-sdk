@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 from apple_fm_sdk.transcript import Transcript
+from apple_fm_sdk.prompt import Prompt, Attachment, PromptError
 from .c_helpers import (
     _ManagedObject,
     _register_handle,
@@ -20,7 +21,8 @@ from .generation_schema import GenerationSchema
 from .generation_options import GenerationOptions
 import threading
 import queue
-from typing import Any, Optional, AsyncIterator, Type, Union, overload
+from typing import Any, Optional, AsyncIterator, Type, overload, Union
+from collections.abc import Iterable
 from .errors import FoundationModelsError
 
 import ctypes
@@ -33,8 +35,6 @@ except ImportError:
     raise ImportError(
         "Foundation Models C bindings not found. Please ensure _foundationmodels_ctypes.py is available."
     )
-
-Prompt = str  # Alias for prompt type
 
 
 class LanguageModelSession(_ManagedObject):
@@ -269,6 +269,29 @@ class LanguageModelSession(_ManagedObject):
         session.transcript = transcript  # Use the provided transcript
         return session
 
+    def _composed_prompt_from_prompt(self, prompt: Prompt):
+        """
+        Creates a FMComposedPrompt (i.e. the C type that represents a prompt) based on a Prompt.
+        """
+        composed_prompt = lib.FMComposedPromptInitialize()
+
+        def add_component_to_composed_prompt(component):
+            if isinstance(component, str):
+                lib.FMComposedPromptAddText(composed_prompt, component.encode("utf-8"))
+            elif isinstance(component, Attachment):
+                component.add_to_composed_prompt(composed_prompt=composed_prompt)
+            else:
+                raise PromptError(
+                    f"Unsupported prompt component type {type(component)}, only str, Image, IdentifiedImage, and Attachment are supported"
+                )
+
+        if isinstance(prompt, Iterable) and not isinstance(prompt, str):
+            for element in prompt:
+                add_component_to_composed_prompt(element)
+        else:
+            add_component_to_composed_prompt(prompt)
+        return composed_prompt
+
     @property
     def is_responding(self) -> bool:
         """Check if the session is currently responding to a request.
@@ -326,7 +349,7 @@ class LanguageModelSession(_ManagedObject):
     @overload  # This overload helps the type checker understand the return type
     async def respond(
         self,
-        prompt: str,
+        prompt: Prompt,
         *,
         json_schema: dict,
         options: Optional[GenerationOptions] = None,
@@ -334,7 +357,7 @@ class LanguageModelSession(_ManagedObject):
 
     async def respond(
         self,
-        prompt: str,
+        prompt: Prompt,
         generating: Optional[Union[Type[Generable], Generable]] = None,
         *,
         schema: Optional[GenerationSchema] = None,
@@ -484,7 +507,7 @@ class LanguageModelSession(_ManagedObject):
         return await self._respond_basic(prompt, options)
 
     async def _respond_basic(
-        self, prompt: str, options: Optional[GenerationOptions] = None
+        self, prompt: Prompt, options: Optional[GenerationOptions] = None
     ) -> str:
         """Get a complete basic text response to a prompt.
 
@@ -505,9 +528,8 @@ class LanguageModelSession(_ManagedObject):
             loop = asyncio.get_running_loop()
             future = loop.create_future()
 
-            prompt_bytes = prompt.encode("utf-8")
+            composed_prompt = self._composed_prompt_from_prompt(prompt=prompt)
 
-            # Convert options to JSON if provided
             options_json = None
             if options is not None:
                 options_json = json.dumps(options.to_dict()).encode("utf-8")
@@ -515,7 +537,11 @@ class LanguageModelSession(_ManagedObject):
             future_handle = _register_handle(future)
 
             task = lib.FMLanguageModelSessionRespond(
-                self._ptr, prompt_bytes, options_json, future_handle, _session_callback
+                self._ptr,
+                composed_prompt,
+                options_json,
+                future_handle,
+                _session_callback,
             )
 
             # Store active task reference
@@ -552,7 +578,7 @@ class LanguageModelSession(_ManagedObject):
 
     async def _respond_with_schema(
         self,
-        prompt: str,
+        prompt: Prompt,
         schema: GenerationSchema,
         options: Optional[GenerationOptions] = None,
     ) -> GeneratedContent:
@@ -562,9 +588,8 @@ class LanguageModelSession(_ManagedObject):
             loop = asyncio.get_running_loop()
             future = loop.create_future()
 
-            prompt_bytes = prompt.encode("utf-8")
+            composed_prompt = self._composed_prompt_from_prompt(prompt=prompt)
 
-            # Convert options to JSON if provided
             options_json = None
             if options is not None:
                 options_json = json.dumps(options.to_dict()).encode("utf-8")
@@ -574,7 +599,7 @@ class LanguageModelSession(_ManagedObject):
             # Always use the proper C binding for guided generation
             task = lib.FMLanguageModelSessionRespondWithSchema(
                 self._ptr,
-                prompt_bytes,
+                composed_prompt,
                 schema._ptr,
                 options_json,
                 future_handle,
@@ -619,7 +644,7 @@ class LanguageModelSession(_ManagedObject):
 
     async def _respond_with_schema_from_json(
         self,
-        prompt: str,
+        prompt: Prompt,
         json_schema: dict,
         options: Optional[GenerationOptions] = None,
     ) -> GeneratedContent:
@@ -629,7 +654,7 @@ class LanguageModelSession(_ManagedObject):
             loop = asyncio.get_running_loop()
             future = loop.create_future()
 
-            prompt_bytes = prompt.encode("utf-8")
+            composed_prompt = self._composed_prompt_from_prompt(prompt=prompt)
             json_schema_bytes = json.dumps(json_schema).encode("utf-8")
 
             # Convert options to JSON if provided
@@ -642,7 +667,7 @@ class LanguageModelSession(_ManagedObject):
             # Use the C binding for guided generation with JSON schema
             task = lib.FMLanguageModelSessionRespondWithSchemaFromJSON(
                 self._ptr,
-                prompt_bytes,
+                composed_prompt,
                 json_schema_bytes,
                 options_json,
                 future_handle,
@@ -802,7 +827,7 @@ class LanguageModelSession(_ManagedObject):
         stream_ptr_holder = [None]  # Use list to allow modification in nested function
 
         def _start_stream():
-            prompt_bytes = prompt.encode("utf-8")
+            composed_prompt = self._composed_prompt_from_prompt(prompt=prompt)
 
             # Convert options to JSON if provided
             options_json = None
@@ -810,7 +835,9 @@ class LanguageModelSession(_ManagedObject):
                 options_json = json.dumps(options.to_dict()).encode("utf-8")
 
             stream_ptr = lib.FMLanguageModelSessionStreamResponse(
-                self._ptr, prompt_bytes, options_json
+                self._ptr,
+                composed_prompt,
+                options_json,
             )
             stream_ptr_holder[0] = stream_ptr  # Store for cleanup
 
